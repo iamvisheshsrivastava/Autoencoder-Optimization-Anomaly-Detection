@@ -10,7 +10,7 @@ Published in: 2024 International Joint Conference on Neural Networks (IJCNN)
 
 ## Overview
 
-This project explores the optimization of autoencoders for anomaly detection and compares their performance against traditional shallow algorithms. The code includes implementations of various autoencoder architectures and shallow models, along with scripts to evaluate their effectiveness on benchmark datasets.
+This project explores the optimization of autoencoders for anomaly detection and compares their performance against traditional shallow algorithms. Specifically, it is compared with the ADBENCH benchmark, and our approach has shown improved accuracy. The code includes implementations of various autoencoder architectures and shallow models, along with scripts to evaluate their effectiveness on benchmark datasets.
 
 ## Repository Structure
 
@@ -52,8 +52,8 @@ If you use this code in your research, please cite our paper:
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 ## Contact
 
-For questions or feedback, please contact Vishesh Srivastava at [your.email@example.com].
+For questions or feedback, please contact Vishesh Srivastava at srivastava.vishesh9@gmail.com.
