@@ -14,10 +14,7 @@ This project explores the optimization of autoencoders for anomaly detection and
 
 ## Repository Structure
 
-- `data/`: Contains datasets used for training and evaluation.
-- `models/`: Implementation of autoencoder architectures and shallow algorithms.
-- `scripts/`: Training, evaluation, and utility scripts.
-- `results/`: Output results and performance metrics.
+....
 
 ## Requirements
 
