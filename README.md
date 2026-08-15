@@ -37,7 +37,7 @@ The project studies how latent-space size, loss functions, and training choices 
 - **Venue:** IEEE IJCNN 2024
 - **Title:** "Autoencoder Optimization for Anomaly Detection: A Comparative Study with Shallow Algorithms"
 - **DOI:** [10.1109/IJCNN60899.2024.10650057](https://doi.org/10.1109/IJCNN60899.2024.10650057)
-- **Authors:** Vikas Kumar · Vishesh Srivastava · Sadia Mahjabin · Emmanuel Muller
+- **Authors:** Vikas Kumar · Vishesh Srivastava · Sadia Mahjabin · Arindam Pal · Simon Klüttermann · Emmanuel Müller
 
 ---
 
@@ -90,7 +90,7 @@ python app.py
 ```bibtex
 @inproceedings{Kumar2024Autoencoder,
   title={Autoencoder Optimization for Anomaly Detection: A Comparative Study with Shallow Algorithms},
-  author={Kumar, Vikas and Srivastava, Vishesh and Mahjabin, Sadia and Muller, Emmanuel},
+  author={Kumar, Vikas and Srivastava, Vishesh and Mahjabin, Sadia and Pal, Arindam and Klüttermann, Simon and Müller, Emmanuel},
   booktitle={Proceedings of the International Joint Conference on Neural Networks (IJCNN)},
   year={2024}
 }

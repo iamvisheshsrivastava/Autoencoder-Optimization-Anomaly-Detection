@@ -3,8 +3,8 @@
 # IEEE IJCNN 2024 Paper: "Autoencoder Optimization for
 # Anomaly Detection: A Comparative Study with Shallow Algorithms"
 #
-# Authors: Vikas Kumar, Vishesh Srivastava,
-#          Sadia Mahjabin, Emmanuel Muller
+# Authors: Vikas Kumar, Vishesh Srivastava, Sadia Mahjabin,
+#          Arindam Pal, Simon Klüttermann, Emmanuel Müller
 #
 # Deploy on HuggingFace Spaces (Gradio SDK)
 # ============================================================
@@ -254,7 +254,7 @@ PAPER_MD = """
 
 **Paper:** *Autoencoder Optimization for Anomaly Detection: A Comparative Study with Shallow Algorithms*
 **Venue:** IEEE IJCNN 2024 &nbsp;|&nbsp; **DOI:** [10.1109/IJCNN60899.2024.10650057](https://doi.org/10.1109/IJCNN60899.2024.10650057)
-**Authors:** Vikas Kumar · **Vishesh Srivastava** · Sadia Mahjabin · Emmanuel Muller
+**Authors:** Vikas Kumar · **Vishesh Srivastava** · Sadia Mahjabin · Arindam Pal · Simon Klüttermann · Emmanuel Müller
 
 ---
 ### How it works
