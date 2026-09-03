@@ -10,13 +10,14 @@
 # ============================================================
 
 import os
+import inspect
 import numpy as np
 import gradio as gr
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 from huggingface_hub import hf_hub_download
@@ -27,12 +28,26 @@ from huggingface_hub import hf_hub_download
 
 HF_REPO_ID = os.getenv("HF_REPO_ID", "VisheshSrivastava/autoencoder-anomaly-detection")
 
+# Pin the model checkpoints to a known-good commit of the Hub repo instead of
+# always resolving "main", so a compromised/mutated Hub repo can't silently
+# swap in a different .h5 file for every Space instance on next cold start.
+# Update this SHA (and re-verify the checkpoints) whenever new weights are
+# intentionally published.
+HF_MODEL_REVISION = os.getenv("HF_MODEL_REVISION", "301025cba5eca10e7f3ce82325ce3298ef5eb8e8")
+
+# ── resource-exhaustion guardrails for the shared CPU-only Space ──
+MAX_UPLOAD_FILES   = 15          # max images accepted per Analyse click
+MAX_FILE_SIZE_MB   = 10          # max size per uploaded file
+MAX_PLOT_IMAGES    = 8           # cap on how many rows the result figure renders
+
 MODEL_CONFIG = {
     "MNIST — Digit '1' (Normal) vs Digit '3' (Anomalous)": {
         "model_file":     "mnist_autoencoder.h5",
         "threshold_file": "mnist_autoencoder_threshold.npy",
         "grayscale":      True,
         "paper_auc":      "0.999",
+        "baseline_auc":    "0.377",
+        "baseline_method": "PCA",
         "loss":           "Binary Cross-Entropy",
         "arch":           "Deep (3-level)",
         "description":    "Trained on handwritten digit '1'. Flags digit '3' as anomalous.",
@@ -44,6 +59,8 @@ MODEL_CONFIG = {
         "threshold_file": "fashion_mnist_autoencoder_threshold.npy",
         "grayscale":      True,
         "paper_auc":      "0.866",
+        "baseline_auc":    "0.560",
+        "baseline_method": "PCA",
         "loss":           "MSE",
         "arch":           "Basic (2-level)",
         "description":    "Trained on trousers. Flags dresses as anomalous.",
@@ -55,6 +72,8 @@ MODEL_CONFIG = {
         "threshold_file": "cifar10_autoencoder_threshold.npy",
         "grayscale":      False,
         "paper_auc":      "0.829",
+        "baseline_auc":    "0.740",
+        "baseline_method": "LOF",
         "loss":           "MSE",
         "arch":           "Basic (2-level)",
         "description":    "Trained on dog images. Flags cars as anomalous.",
@@ -66,6 +85,8 @@ MODEL_CONFIG = {
         "threshold_file": "svhn_autoencoder_threshold.npy",
         "grayscale":      False,
         "paper_auc":      "0.631",
+        "baseline_auc":    "0.596",
+        "baseline_method": "LOF",
         "loss":           "Binary Cross-Entropy",
         "arch":           "Basic (2-level)",
         "description":    "Trained on street-view digit '1'. Flags other digits as anomalous.",
@@ -90,17 +111,30 @@ def get_model(dataset_key: str):
         try:
             model_path     = hf_hub_download(repo_id=HF_REPO_ID,
                                              filename=cfg["model_file"],
-                                             repo_type="model")
+                                             repo_type="model",
+                                             revision=HF_MODEL_REVISION)
             threshold_path = hf_hub_download(repo_id=HF_REPO_ID,
                                              filename=cfg["threshold_file"],
-                                             repo_type="model")
+                                             repo_type="model",
+                                             revision=HF_MODEL_REVISION)
         except Exception:
             raise gr.Error(
                 f"⏳ Model for **{dataset_key}** is not yet uploaded. "
                 "Please try the **CIFAR-10** model which is available now. "
                 "The remaining models will be added shortly!"
             )
-        _model_cache[dataset_key]     = load_model(model_path, compile=False)
+        # Legacy HDF5 (.h5) Keras checkpoints can embed Lambda/custom-object
+        # layers that execute arbitrary Python on deserialization. Newer
+        # Keras load_model() implementations accept `safe_mode` to refuse
+        # that; pass it only if the installed Keras version actually
+        # supports it (it is a Keras-3-only argument, and is a no-op for
+        # the legacy .h5 format even there — the real protection is the
+        # revision pin above, which stops an untrusted/mutated Hub repo
+        # from swapping the file out from under us).
+        load_kwargs = {"compile": False}
+        if "safe_mode" in inspect.signature(load_model).parameters:
+            load_kwargs["safe_mode"] = True
+        _model_cache[dataset_key]     = load_model(model_path, **load_kwargs)
         _threshold_cache[dataset_key] = float(np.load(threshold_path))
         print(f"  Loaded. Threshold = {_threshold_cache[dataset_key]:.5f}")
 
@@ -139,15 +173,39 @@ def run_inference(dataset_key: str, uploaded_files):
     if not uploaded_files:
         return None, [], "⚠️  Please upload at least one image."
 
+    # ── resource-exhaustion guardrail: cap number of files per request ──
+    if len(uploaded_files) > MAX_UPLOAD_FILES:
+        raise gr.Error(
+            f"⚠️ Too many files ({len(uploaded_files)}). "
+            f"Please upload at most {MAX_UPLOAD_FILES} images per request."
+        )
+
     model, threshold = get_model(dataset_key)
     cfg = MODEL_CONFIG[dataset_key]
 
-    # ── preprocess ──
-    originals, names = [], []
+    # ── preprocess (skip, don't abort on, bad/oversized/corrupt files) ──
+    originals, names, skipped = [], [], []
     for f in uploaded_files:
-        pil_img = Image.open(f.name if hasattr(f, "name") else f)
-        originals.append(preprocess(pil_img, cfg["grayscale"]))
-        names.append(os.path.basename(f.name if hasattr(f, "name") else str(f)))
+        path = f.name if hasattr(f, "name") else f
+        display_name = os.path.basename(path if isinstance(path, str) else str(f))
+        try:
+            size_mb = os.path.getsize(path) / (1024 * 1024)
+            if size_mb > MAX_FILE_SIZE_MB:
+                skipped.append(f"{display_name} (too large: {size_mb:.1f} MB)")
+                continue
+            pil_img = Image.open(path)
+            pil_img.load()   # force decode now so truncated files raise here
+            originals.append(preprocess(pil_img, cfg["grayscale"]))
+            names.append(display_name)
+        except (UnidentifiedImageError, OSError, ValueError) as e:
+            skipped.append(f"{display_name} ({e.__class__.__name__})")
+            continue
+
+    if not originals:
+        raise gr.Error(
+            "⚠️ None of the uploaded files could be read as valid images: "
+            + "; ".join(skipped)
+        )
 
     batch = np.array(originals)                          # (N, 32, 32, 3)
     reconstructions = model.predict(batch, verbose=0)    # (N, 32, 32, 3)
@@ -165,8 +223,11 @@ def run_inference(dataset_key: str, uploaded_files):
         f"**{len(names)} image(s) analysed** using **{dataset_key}** model  |  "
         f"Threshold: `{threshold:.5f}`  |  "
         f"🔴 Anomalous: **{n_anomalous}**  /  🟢 Normal: **{len(names)-n_anomalous}**  |  "
-        f"Paper AUC-ROC: **{cfg['paper_auc']}**"
+        f"Paper AUC-ROC: **{cfg['paper_auc']}** (autoencoder) vs **{cfg['baseline_auc']}** "
+        f"({cfg['baseline_method']}, best shallow baseline)"
     )
+    if skipped:
+        summary += "\n\n⚠️ **Skipped unreadable file(s):** " + "; ".join(skipped)
 
     # ── visualisation ──
     fig = build_figure(names, originals, reconstructions, mae_scores, threshold, dataset_key)
@@ -179,10 +240,16 @@ def run_inference(dataset_key: str, uploaded_files):
 # ============================================================
 
 def build_figure(names, originals, reconstructions, mae_scores, threshold, dataset_key):
-    n = len(originals)
+    n_total = len(originals)
+    # Cap how many rows we render — figure height (and matplotlib CPU/memory
+    # cost) scales linearly with n, so an unbounded batch could blow both up.
+    n = min(n_total, MAX_PLOT_IMAGES)
     fig = plt.figure(figsize=(13, 4.2 * n), facecolor="#0f0f0f")
+    title = f"Anomaly Detection — {dataset_key}"
+    if n_total > n:
+        title += f"  (showing first {n} of {n_total} images)"
     fig.suptitle(
-        f"Anomaly Detection — {dataset_key}",
+        title,
         fontsize=13, fontweight="bold", color="white", y=1.002
     )
 
@@ -309,7 +376,8 @@ with gr.Blocks(
                     f"| | |\n|---|---|\n"
                     f"| Architecture | {cfg['arch']} |\n"
                     f"| Loss function | {cfg['loss']} |\n"
-                    f"| Paper AUC-ROC | **{cfg['paper_auc']}** |\n"
+                    f"| Paper AUC-ROC (autoencoder) | **{cfg['paper_auc']}** |\n"
+                    f"| Best shallow baseline ({cfg['baseline_method']}) | {cfg['baseline_auc']} |\n"
                     f"| Normal example | {cfg['example_normal']} |\n"
                     f"| Anomaly example | {cfg['example_anomaly']} |"
                 )
@@ -373,4 +441,7 @@ with gr.Blocks(
     )
 
 if __name__ == "__main__":
+    # Bound how much concurrent inference work the shared CPU-only Space can
+    # be pushed into at once (see issue: unbounded uploads / no queueing).
+    demo.queue(max_size=20, default_concurrency_limit=2)
     demo.launch()
