@@ -22,9 +22,9 @@ license: mit
 
 ## What This Demo Does
 
-Upload an image and the pre-trained convolutional autoencoder will tell you whether it is **normal or anomalous**, based on reconstruction error.
+Upload an image and the pre-trained convolutional autoencoder tells you whether it's **normal or anomalous**, based on reconstruction error.
 
-The autoencoders are trained **only on normal images** (one-class learning paradigm). At test time, anomalous images produce a high Mean Absolute Error (MAE) because the model has never seen them — flagged as anomalous.
+Each autoencoder was trained **only on normal images** (one-class learning). At test time it tries to reconstruct whatever you give it — anomalous images come out with a high Mean Absolute Error (MAE) because the model has never seen anything like them, and that's what gets flagged.
 
 ## Available Models
 
@@ -34,6 +34,8 @@ The autoencoders are trained **only on normal images** (one-class learning parad
 | Fashion-MNIST | Trousers | Dresses | **0.866** |
 | CIFAR-10 | Dogs | Cars | **0.829** |
 | SVHN | Digit '1' | Other digits | **0.631** |
+
+SVHN is listed for completeness (it's in the paper) but its checkpoint isn't uploaded yet — the training script hits a `protobuf`/`tensorflow_datasets` version conflict (see GitHub issue #7). Selecting it here will show a "not yet uploaded" message rather than results.
 
 ## Architecture
 

@@ -4,49 +4,15 @@
 [![HuggingFace Demo](https://img.shields.io/badge/🤗%20HuggingFace-Live%20Demo-orange?style=flat-square)](https://huggingface.co/spaces/VisheshSrivastava/autoencoder-anomaly-detection)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
-This repository contains the notebook and supporting notes for the paper **"Autoencoder Optimization for Anomaly Detection: A Comparative Study with Shallow Algorithms"**, published at IEEE IJCNN 2024.
+This repository holds the notebook and supporting code behind our paper, **"Autoencoder Optimization for Anomaly Detection: A Comparative Study with Shallow Algorithms"**, presented at IEEE IJCNN 2024.
 
----
+## Live Demo
 
-## 🔍 Live Demo
+**[huggingface.co/spaces/VisheshSrivastava/autoencoder-anomaly-detection](https://huggingface.co/spaces/VisheshSrivastava/autoencoder-anomaly-detection)** — upload an image and see the trained autoencoder flag it normal or anomalous, with the reconstruction error map alongside it.
 
-Try the interactive demo — upload your own images and see the anomaly detector in action:
+## What's here
 
-**👉 [huggingface.co/spaces/VisheshSrivastava/autoencoder-anomaly-detection](https://huggingface.co/spaces/VisheshSrivastava/autoencoder-anomaly-detection)**
-
----
-
-## Overview
-
-The project studies how latent-space size, loss functions, and training choices affect anomaly detection performance, with a focus on autoencoder-based methods compared against classical shallow baselines.
-
----
-
-## Repository Contents
-
-- `Image Data.ipynb` — notebook for the image-data experiments in this repository
-- `demo/app.py` — Gradio web app for the live HuggingFace demo
-- `demo/train_and_upload.py` — script to retrain all models and upload weights to HuggingFace Hub
-- `demo/requirements.txt` — dependencies for the demo app
-- `README.md` — project overview, usage notes, and citation
-
----
-
-## Publication
-
-- **Venue:** IEEE IJCNN 2024
-- **Title:** "Autoencoder Optimization for Anomaly Detection: A Comparative Study with Shallow Algorithms"
-- **DOI:** [10.1109/IJCNN60899.2024.10650057](https://doi.org/10.1109/IJCNN60899.2024.10650057)
-- **Authors:** Vikas Kumar · Vishesh Srivastava · Sadia Mahjabin · Arindam Pal · Simon Klüttermann · Emmanuel Müller
-
----
-
-## Highlights
-
-- Compares autoencoder-based anomaly detection against shallow baselines (PCA, LOF, CBLOF, KNN)
-- Studies the effect of latent dimension and reconstruction loss function choices
-- Evaluates on 5 datasets: CIFAR-10, Fashion-MNIST, MNIST, MVTec-AD, SVHN
-- One-class learning paradigm — trained only on normal samples
+We ask how far a plain convolutional autoencoder gets on one-class anomaly detection compared to classical shallow methods (PCA, LOF, CBLOF, KNN), and how much latent-space size and reconstruction loss choice matter along the way. Everything is trained in the one-class setting — only normal samples during training, anomalies show up only at test time as reconstruction failures.
 
 ### Results (AUC-ROC)
 
@@ -58,7 +24,25 @@ The project studies how latent-space size, loss functions, and training choices 
 | SVHN | **0.631** | 0.596 | LOF |
 | MVTec-AD | 0.483 | 0.653 | PCA |
 
----
+MVTec-AD is the interesting exception — PCA beats the autoencoder there, most likely because resizing the industrial defect images down to 32×32 throws away exactly the fine texture the model needs to catch small anomalies. We left that result in rather than sweep it under the rug; it's a real finding about where this architecture stops working.
+
+The live demo currently serves the MNIST, Fashion-MNIST, and CIFAR-10 checkpoints. SVHN is trained on paper but not uploaded yet — the training script hits a `protobuf`/`tensorflow_datasets` version conflict that needs a clean environment to sort out (tracked in [#7](https://github.com/iamvisheshsrivastava/Autoencoder-Optimization-Anomaly-Detection/issues/7)).
+
+## Repository contents
+
+- `Image Data.ipynb` — the experiments notebook: training, evaluation, and baseline comparisons
+- `demo/app.py` — the Gradio app behind the HuggingFace Space
+- `demo/README_HuggingFace.md` — Space config/README (deployed as the Space's `README.md`)
+- `demo/train_and_upload.py`, `demo/train_remaining_models.py` — retrain a model and push its weights + threshold to the HF Hub
+- `demo/requirements.txt` — pinned dependencies for the demo app
+- `.github/workflows/keep-space-awake.yml` — pings the Space every 20 minutes so it doesn't fall asleep on HF's free tier
+
+## Publication
+
+- **Venue:** IEEE IJCNN 2024
+- **Title:** "Autoencoder Optimization for Anomaly Detection: A Comparative Study with Shallow Algorithms"
+- **DOI:** [10.1109/IJCNN60899.2024.10650057](https://doi.org/10.1109/IJCNN60899.2024.10650057)
+- **Authors:** Vikas Kumar · Vishesh Srivastava · Sadia Mahjabin · Arindam Pal · Simon Klüttermann · Emmanuel Müller
 
 ## How to Use
 
@@ -83,8 +67,6 @@ pip install -r requirements.txt
 python app.py
 ```
 
----
-
 ## Citation
 
 ```bibtex
@@ -95,8 +77,6 @@ python app.py
   year={2024}
 }
 ```
-
----
 
 ## License
 
