@@ -10,6 +10,14 @@ This repository holds the notebook and supporting code behind our paper, **"Auto
 
 **[huggingface.co/spaces/VisheshSrivastava/autoencoder-anomaly-detection](https://huggingface.co/spaces/VisheshSrivastava/autoencoder-anomaly-detection)** — upload an image and see the trained autoencoder flag it normal or anomalous, with the reconstruction error map alongside it.
 
+### Screenshot
+
+Real output from the live Space (MNIST model), run against two small hand-drawn test digits — a '1' and a '3' — rather than actual MNIST samples, so treat the specific scores as illustrative of the pipeline, not the paper's benchmark numbers:
+
+![Detection result: original, reconstruction, error map, and MAE score for two test images](docs/screenshots/detection_result_plot.png)
+
+Both images were flagged anomalous here, including the hand-drawn '1' — a reminder that these one-class autoencoders are trained on the *real* MNIST digit-'1' distribution, and a crude synthetic drawing falls outside it too. That's expected, not a bug; see the AUC-ROC table below for the model's actual measured performance on real test data.
+
 ## What's here
 
 We ask how far a plain convolutional autoencoder gets on one-class anomaly detection compared to classical shallow methods (PCA, LOF, CBLOF, KNN), and how much latent-space size and reconstruction loss choice matter along the way. Everything is trained in the one-class setting — only normal samples during training, anomalies show up only at test time as reconstruction failures.
