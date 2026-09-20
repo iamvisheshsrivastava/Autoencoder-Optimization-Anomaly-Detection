@@ -62,7 +62,7 @@ The live demo currently serves the MNIST, Fashion-MNIST, and CIFAR-10 checkpoint
    ```
 2. Create a Python environment with the required libraries:
    ```bash
-   pip install numpy pandas tensorflow scikit-learn matplotlib jupyter
+   pip install -r requirements_notebook.txt
    ```
 3. Open `Image Data.ipynb` in Jupyter Notebook or JupyterLab
 4. Update any dataset paths or environment-specific settings before running all cells

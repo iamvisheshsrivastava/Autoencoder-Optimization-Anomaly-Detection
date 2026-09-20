@@ -1,0 +1,13 @@
+# Dependencies for reproducing the paper experiments in "Image Data.ipynb"
+# (verified against the notebook's imports). Use Python 3.9-3.11.
+tensorflow==2.13.0
+keras-tuner==1.4.6
+scikit-learn>=1.3.0
+pyod>=1.1.0
+# tfds 4.9.10 needs protobuf>=5, which conflicts with TF 2.13/2.15 (see issue #7)
+tensorflow-datasets>=4.9.0,<4.9.7
+protobuf>=3.20.3,<5.0.0
+numpy>=1.24.0,<2.0.0
+pandas>=2.0.0
+matplotlib>=3.7.0
+jupyter>=1.0.0

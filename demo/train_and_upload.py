@@ -21,6 +21,14 @@ from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 import os
 
+# Reproducibility: fix all RNG seeds so retraining gives the same weights/threshold
+SEED = 42
+os.environ["PYTHONHASHSEED"] = str(SEED)
+import random
+random.seed(SEED)
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
+
 # ── Install HuggingFace Hub (not pre-installed on Kaggle) ──
 os.system("pip install -q huggingface_hub")
 from huggingface_hub import HfApi, login, create_repo
