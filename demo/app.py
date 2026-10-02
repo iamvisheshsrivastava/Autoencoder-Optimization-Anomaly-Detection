@@ -21,6 +21,11 @@ from PIL import Image, UnidentifiedImageError
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 from huggingface_hub import hf_hub_download
+from huggingface_hub.utils import (
+    EntryNotFoundError,
+    RepositoryNotFoundError,
+    RevisionNotFoundError,
+)
 
 # ============================================================
 # Configuration
@@ -117,11 +122,25 @@ def get_model(dataset_key: str):
                                              filename=cfg["threshold_file"],
                                              repo_type="model",
                                              revision=HF_MODEL_REVISION)
-        except Exception:
+        except (EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError):
+            # The checkpoint genuinely isn't present on the Hub yet (or the
+            # pinned repo/revision doesn't exist) — this is the one case
+            # where "not yet uploaded" is an accurate message.
             raise gr.Error(
                 f"⏳ Model for **{dataset_key}** is not yet uploaded. "
                 "Please try the **CIFAR-10** model which is available now. "
                 "The remaining models will be added shortly!"
+            )
+        except Exception as e:
+            # Anything else (network timeout, HF Hub outage, rate limiting,
+            # auth failure, etc.) is a transient/infra problem, not a missing
+            # checkpoint — log the real exception and tell the user it's
+            # retry-able instead of implying the model doesn't exist.
+            print(f"  Error downloading {cfg['model_file']} for {dataset_key}: "
+                  f"{e.__class__.__name__}: {e}")
+            raise gr.Error(
+                f"⚠️ Could not reach the model repository for **{dataset_key}** "
+                "right now. Please retry in a moment."
             )
         # Legacy HDF5 (.h5) Keras checkpoints can embed Lambda/custom-object
         # layers that execute arbitrary Python on deserialization. Newer
