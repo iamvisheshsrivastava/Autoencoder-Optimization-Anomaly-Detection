@@ -262,7 +262,20 @@ print("\n" + "="*60)
 print("TRAINING: SVHN")
 print("="*60)
 
-os.system("pip install -q tensorflow-datasets")
+# Pin tensorflow-datasets/tensorflow-metadata/protobuf instead of installing
+# tfds unpinned (issue #7): tfds>=4.9.7 requires protobuf>=5, which conflicts
+# with the protobuf<5 that TensorFlow 2.13/2.15 need. Pinning tfds alone
+# isn't enough either — its tensorflow-metadata dependency still resolves to
+# a version whose generated _pb2.py files import
+# `google.protobuf.runtime_version`, which doesn't exist before protobuf 5,
+# so tensorflow-metadata needs pinning too. Verified end-to-end (import +
+# `tfds.builder("svhn_cropped")`) with this exact combination.
+os.system(
+    "pip install -q "
+    "'tensorflow-datasets>=4.9.0,<4.9.7' "
+    "'tensorflow-metadata>=1.13.0,<1.15.0' "
+    "'protobuf>=3.20.3,<5.0.0'"
+)
 import tensorflow_datasets as tfds
 
 ds_train = tfds.load("svhn_cropped", split="train", as_supervised=True)
