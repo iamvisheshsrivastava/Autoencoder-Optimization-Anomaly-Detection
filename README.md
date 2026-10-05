@@ -34,15 +34,26 @@ We ask how far a plain convolutional autoencoder gets on one-class anomaly detec
 
 MVTec-AD is the interesting exception — PCA beats the autoencoder there, most likely because resizing the industrial defect images down to 32×32 throws away exactly the fine texture the model needs to catch small anomalies. We left that result in rather than sweep it under the rug; it's a real finding about where this architecture stops working.
 
-The live demo currently serves the MNIST, Fashion-MNIST, and CIFAR-10 checkpoints. SVHN is trained on paper but not uploaded yet — the training script hits a `protobuf`/`tensorflow_datasets` version conflict that needs a clean environment to sort out (tracked in [#7](https://github.com/iamvisheshsrivastava/Autoencoder-Optimization-Anomaly-Detection/issues/7)).
+The live demo currently serves the MNIST, Fashion-MNIST, and CIFAR-10 checkpoints. SVHN is trained on paper but not uploaded yet — the training script hits a `protobuf`/`tensorflow_datasets` version conflict that needs a clean environment to sort out (tracked in [#7](https://github.com/iamvisheshsrivastava/Autoencoder-Optimization-Anomaly-Detection/issues/7)). MVTec-AD is wired into the demo's dataset dropdown too, but shown as unavailable — it requires a licensed dataset download we don't have a copy of (see [#3](https://github.com/iamvisheshsrivastava/Autoencoder-Optimization-Anomaly-Detection/issues/3)).
+
+### How much does latent size matter?
+
+[`docs/latent_dim_sweep.py`](docs/latent_dim_sweep.py) sweeps the autoencoder's bottleneck capacity (8/16/32/64/128 filters) and plots AUC-ROC vs. latent size ([#15](https://github.com/iamvisheshsrivastava/Autoencoder-Optimization-Anomaly-Detection/issues/15)). On MNIST (digit '1' vs '3'), capacity barely matters — AUC-ROC stays pinned at ~0.998 across the whole sweep, because that task is easy enough not to be capacity-limited:
+
+![AUC-ROC vs. latent/bottleneck size for MNIST](docs/screenshots/latent_dim_sweep.png)
+
+Raw numbers: [`docs/latent_dim_sweep_results.csv`](docs/latent_dim_sweep_results.csv). Re-run for another dataset with `python docs/latent_dim_sweep.py --dataset fashion_mnist`.
 
 ## Repository contents
 
 - `Image Data.ipynb` — the experiments notebook: training, evaluation, and baseline comparisons
-- `demo/app.py` — the Gradio app behind the HuggingFace Space
+- `demo/app.py` — the Gradio app behind the HuggingFace Space (dataset models, threshold slider, CSV export)
+- `demo/sample_images/` — a couple of normal/anomalous PNGs per dataset, bundled so visitors can try the demo without finding their own images
 - `demo/README_HuggingFace.md` — Space config/README (deployed as the Space's `README.md`)
 - `demo/train_and_upload.py`, `demo/train_remaining_models.py` — retrain a model and push its weights + threshold to the HF Hub
 - `demo/requirements.txt` — pinned dependencies for the demo app
+- `docs/latent_dim_sweep.py` — latent-capacity ablation sweep script (see "How much does latent size matter?" above)
+- `docs/MODEL_CARD.md` — model card content for the HuggingFace Hub **model** repository (copy into that repo's `README.md`; see [#6](https://github.com/iamvisheshsrivastava/Autoencoder-Optimization-Anomaly-Detection/issues/6))
 - `.github/workflows/keep-space-awake.yml` — pings the Space every 20 minutes so it doesn't fall asleep on HF's free tier
 
 ## Publication

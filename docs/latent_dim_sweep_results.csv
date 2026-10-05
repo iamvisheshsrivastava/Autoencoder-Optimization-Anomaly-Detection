@@ -1,0 +1,6 @@
+dataset,latent_dim,auc_roc
+mnist,8,0.9985
+mnist,16,0.9984
+mnist,32,0.9985
+mnist,64,0.9986
+mnist,128,0.9982614384786496

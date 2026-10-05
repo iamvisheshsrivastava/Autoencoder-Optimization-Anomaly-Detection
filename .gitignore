@@ -12,6 +12,7 @@ dist/
 build/
 .eggs/
 .venv/
+.venv*/
 venv/
 env/
 
@@ -28,6 +29,7 @@ env/
 
 # Data
 *.csv
+!docs/latent_dim_sweep_results.csv
 *.zip
 *.tar.gz
 datasets/
