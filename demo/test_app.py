@@ -10,6 +10,8 @@
 # has the same keys).
 # ============================================================
 
+import os
+
 import numpy as np
 import pytest
 import gradio as gr
@@ -101,10 +103,13 @@ def test_model_config_entries_have_consistent_keys():
 
 
 def test_run_inference_with_no_files_returns_warning():
-    fig, rows, summary = app.run_inference("MNIST — Digit '1' (Normal) vs Digit '3' (Anomalous)", [])
+    fig, rows, summary, cache, slider_update = app.run_inference(
+        "MNIST — Digit '1' (Normal) vs Digit '3' (Anomalous)", []
+    )
     assert fig is None
     assert rows == []
     assert "upload at least one image" in summary.lower()
+    assert cache is None
 
 
 def test_run_inference_too_many_files_raises_error():
@@ -121,13 +126,14 @@ def test_run_inference_skips_oversized_file(tmp_path, monkeypatch):
     valid = _make_image_file(tmp_path, "valid.png")
     oversized = _make_oversized_file(tmp_path, "big.png")
 
-    fig, rows, summary = app.run_inference(DATASET_KEY, [valid, oversized])
+    fig, rows, summary, cache, slider_update = app.run_inference(DATASET_KEY, [valid, oversized])
 
     assert fig is not None
     assert len(rows) == 1
     assert rows[0][0] == "valid.png"
     assert "too large" in summary.lower()
     assert "big.png" in summary
+    assert cache["names"] == ["valid.png"]
 
 
 def test_run_inference_skips_corrupt_file(tmp_path, monkeypatch):
@@ -135,13 +141,82 @@ def test_run_inference_skips_corrupt_file(tmp_path, monkeypatch):
     valid = _make_image_file(tmp_path, "valid.png")
     corrupt = _make_corrupt_file(tmp_path, "corrupt.png")
 
-    fig, rows, summary = app.run_inference(DATASET_KEY, [valid, corrupt])
+    fig, rows, summary, cache, slider_update = app.run_inference(DATASET_KEY, [valid, corrupt])
 
     assert fig is not None
     assert len(rows) == 1
     assert rows[0][0] == "valid.png"
     assert "corrupt.png" in summary
     assert "skipped" in summary.lower()
+
+
+def test_run_inference_figure_is_closed(tmp_path, monkeypatch):
+    # Issue #18: the returned figure must no longer be tracked by pyplot's
+    # global figure manager after run_inference returns, even though the
+    # Figure object itself is still valid and returned to the caller.
+    import matplotlib.pyplot as plt
+
+    _patch_get_model(monkeypatch)
+    valid = _make_image_file(tmp_path, "valid.png")
+
+    n_before = len(plt.get_fignums())
+    fig, rows, summary, cache, slider_update = app.run_inference(DATASET_KEY, [valid])
+    n_after = len(plt.get_fignums())
+
+    assert fig is not None
+    assert n_after == n_before
+
+
+def test_reclassify_changes_predictions_without_recomputing(tmp_path, monkeypatch):
+    # Issue #13: moving the threshold should re-classify the cached scores
+    # (and update the cache) without needing a new model/predict call.
+    _patch_get_model(monkeypatch, threshold=0.5)
+    valid = _make_image_file(tmp_path, "valid.png")
+
+    fig, rows, summary, cache, slider_update = app.run_inference(DATASET_KEY, [valid])
+    # _DummyModel reconstructs as all-zeros, so MAE == mean(original pixel values).
+    mae = cache["mae_scores"][0]
+
+    # A very high threshold should reclassify everything as Normal.
+    fig2, rows2, summary2, cache2 = app.reclassify(mae + 1.0, cache)
+    assert "Normal" in rows2[0][3]
+
+    # A threshold of 0 should reclassify everything as Anomalous.
+    fig3, rows3, summary3, cache3 = app.reclassify(0.0, cache)
+    assert "Anomalous" in rows3[0][3]
+
+
+def test_export_csv_writes_table_rows(tmp_path, monkeypatch):
+    # Issue #14: the CSV export should contain exactly the cached table rows.
+    _patch_get_model(monkeypatch)
+    valid = _make_image_file(tmp_path, "valid.png")
+    fig, rows, summary, cache, slider_update = app.run_inference(DATASET_KEY, [valid])
+
+    path = app.export_csv(cache)
+    with open(path, newline="", encoding="utf-8") as f:
+        import csv as _csv
+        written_rows = list(_csv.reader(f))
+
+    assert written_rows[0] == ["Filename", "MAE Score", "Threshold", "Prediction"]
+    assert written_rows[1][0] == "valid.png"
+
+
+def test_export_csv_without_prior_run_raises_error():
+    with pytest.raises(gr.Error):
+        app.export_csv(None)
+
+
+def test_sample_images_exist_for_every_available_dataset():
+    # Issue #4: every dataset with trained weights should have bundled
+    # normal + anomalous examples. Datasets without weights yet (e.g.
+    # MVTec-AD, issue #3) are expected to have none.
+    for dataset_key, cfg in app.MODEL_CONFIG.items():
+        if not cfg.get("available", True):
+            continue
+        paths = app.SAMPLE_IMAGES.get(dataset_key, [])
+        assert len(paths) >= 4, f"{dataset_key} has too few sample images"
+        for p in paths:
+            assert os.path.exists(p), f"missing sample image: {p}"
 
 
 def test_run_inference_all_files_unreadable_raises_error(tmp_path, monkeypatch):

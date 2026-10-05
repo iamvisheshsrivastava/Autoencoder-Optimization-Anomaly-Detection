@@ -9,8 +9,10 @@
 # Deploy on HuggingFace Spaces (Gradio SDK)
 # ============================================================
 
+import csv
 import os
 import inspect
+import tempfile
 import numpy as np
 import gradio as gr
 import matplotlib
@@ -98,6 +100,45 @@ MODEL_CONFIG = {
         "example_normal": "Upload colour images of house-number digit '1'",
         "example_anomaly":"Upload other SVHN digit images",
     },
+    # MVTec-AD (issue #3): the paper reports this dataset, and it's the only
+    # one where the shallow baseline (PCA) *beats* the autoencoder — an
+    # interesting, honest negative result worth surfacing in the demo. The
+    # code path below is fully wired up (model-selection, preprocessing,
+    # inference, UI note), but there are no trained weights to serve it:
+    # MVTec-AD requires accepting a license to download
+    # (https://www.mvtec.com/company/research/datasets/mvtec-ad) and the
+    # repo has no local copy, so this entry is marked unavailable rather
+    # than silently failing a HuggingFace Hub lookup. Once someone trains
+    # and uploads `mvtec_ad_autoencoder.h5` / `_threshold.npy` to the HF
+    # Hub repo, flip `available` to True (no other code changes needed).
+    "MVTec-AD — Industrial Defects (requires licensed dataset)": {
+        "model_file":     "mvtec_ad_autoencoder.h5",
+        "threshold_file": "mvtec_ad_autoencoder_threshold.npy",
+        "grayscale":      False,
+        "paper_auc":      "0.483",
+        "baseline_auc":    "0.653",
+        "baseline_method": "PCA",
+        "loss":           "MSE",
+        "arch":           "Basic (2-level)",
+        "description":    (
+            "Industrial defect detection (e.g. hazelnut/bottle/carpet categories). "
+            "⚠️ Unlike every other dataset here, PCA beats the autoencoder on "
+            "MVTec-AD in the paper — likely because resizing to 32×32 throws away "
+            "the fine defect texture the model needs."
+        ),
+        "example_normal": "N/A — weights not trained/uploaded yet (see note above)",
+        "example_anomaly":"N/A — weights not trained/uploaded yet (see note above)",
+        "available": False,
+        "unavailable_reason": (
+            "MVTec-AD requires agreeing to a license to download "
+            "(mvtec.com/company/research/datasets/mvtec-ad) and is not bundled "
+            "in this repo. Training also needs the categories decided (e.g. "
+            "hazelnut, bottle, carpet) and, ideally, a higher input resolution "
+            "than the 32×32 used elsewhere to preserve defect texture. Once "
+            "trained, upload `mvtec_ad_autoencoder.h5` + `_threshold.npy` to "
+            "the HF Hub model repo and set `available: True` here."
+        ),
+    },
 }
 
 # ── in-memory model cache so we don't reload on every request ──
@@ -112,6 +153,17 @@ _threshold_cache = {}
 def get_model(dataset_key: str):
     if dataset_key not in _model_cache:
         cfg = MODEL_CONFIG[dataset_key]
+
+        # Some entries (e.g. MVTec-AD, issue #3) are wired up end-to-end in
+        # the UI/preprocessing but have no trained weights to serve yet.
+        # Fail fast with the real reason instead of spending a network
+        # round-trip on a HuggingFace Hub lookup that will 404 anyway.
+        if not cfg.get("available", True):
+            raise gr.Error(
+                f"⏳ **{dataset_key}** isn't available yet.\n\n"
+                + cfg.get("unavailable_reason", "No trained weights for this dataset yet.")
+            )
+
         print(f"Downloading {cfg['model_file']} from HuggingFace Hub …")
         try:
             model_path     = hf_hub_download(repo_id=HF_REPO_ID,
@@ -184,13 +236,45 @@ def preprocess(pil_image: Image.Image, grayscale: bool) -> np.ndarray:
 # Inference
 # ============================================================
 
+def classify_rows(names, mae_scores, threshold):
+    """Turn (names, mae_scores) into the result table rows + anomaly count,
+    given a decision threshold. Pure function of already-computed scores, so
+    it can be re-run cheaply whenever the threshold slider moves without
+    re-running model.predict()."""
+    table_rows = []
+    for name, score in zip(names, mae_scores):
+        pred = "🔴  Anomalous" if score > threshold else "🟢  Normal"
+        table_rows.append([name, f"{score:.5f}", f"{threshold:.5f}", pred])
+    n_anomalous = sum(1 for r in table_rows if "Anomalous" in r[3])
+    return table_rows, n_anomalous
+
+
+def build_summary(dataset_key, names, threshold, n_anomalous, skipped, cfg):
+    summary = (
+        f"**{len(names)} image(s) analysed** using **{dataset_key}** model  |  "
+        f"Threshold: `{threshold:.5f}`  |  "
+        f"🔴 Anomalous: **{n_anomalous}**  /  🟢 Normal: **{len(names)-n_anomalous}**  |  "
+        f"Paper AUC-ROC: **{cfg['paper_auc']}** (autoencoder) vs **{cfg['baseline_auc']}** "
+        f"({cfg['baseline_method']}, best shallow baseline)"
+    )
+    if skipped:
+        summary += "\n\n⚠️ **Skipped unreadable file(s):** " + "; ".join(skipped)
+    return summary
+
+
 def run_inference(dataset_key: str, uploaded_files):
     """
     Core inference function.
-    Returns (fig, table_rows, summary_str).
+    Returns (fig, table_rows, summary_str, cache, slider_update).
+
+    `cache` is a plain dict (JSON-serialisable, suitable for gr.State) holding
+    everything needed to re-classify/re-render at a different threshold
+    without re-running model.predict() — see reclassify() and export_csv().
+    `slider_update` re-centers the threshold slider on this run's default
+    threshold/dataset so it stays in sync with whichever model was just used.
     """
     if not uploaded_files:
-        return None, [], "⚠️  Please upload at least one image."
+        return None, [], "⚠️  Please upload at least one image.", None, gr.update()
 
     # ── resource-exhaustion guardrail: cap number of files per request ──
     if len(uploaded_files) > MAX_UPLOAD_FILES:
@@ -231,27 +315,75 @@ def run_inference(dataset_key: str, uploaded_files):
 
     mae_scores = np.mean(np.abs(reconstructions - batch), axis=(1, 2, 3))
 
-    # ── build table ──
-    table_rows = []
-    for name, score in zip(names, mae_scores):
-        pred = "🔴  Anomalous" if score > threshold else "🟢  Normal"
-        table_rows.append([name, f"{score:.5f}", f"{threshold:.5f}", pred])
-
-    n_anomalous = sum(1 for r in table_rows if "Anomalous" in r[3])
-    summary = (
-        f"**{len(names)} image(s) analysed** using **{dataset_key}** model  |  "
-        f"Threshold: `{threshold:.5f}`  |  "
-        f"🔴 Anomalous: **{n_anomalous}**  /  🟢 Normal: **{len(names)-n_anomalous}**  |  "
-        f"Paper AUC-ROC: **{cfg['paper_auc']}** (autoencoder) vs **{cfg['baseline_auc']}** "
-        f"({cfg['baseline_method']}, best shallow baseline)"
-    )
-    if skipped:
-        summary += "\n\n⚠️ **Skipped unreadable file(s):** " + "; ".join(skipped)
+    table_rows, n_anomalous = classify_rows(names, mae_scores, threshold)
+    summary = build_summary(dataset_key, names, threshold, n_anomalous, skipped, cfg)
 
     # ── visualisation ──
     fig = build_figure(names, originals, reconstructions, mae_scores, threshold, dataset_key)
+    # Release pyplot's global reference to the figure now that it has been
+    # rendered; the returned Figure object (already drawn on the Agg canvas)
+    # is unaffected and still renders fine in gr.Plot. Without this, every
+    # Analyse click leaks one more Figure on this long-running process (#18).
+    plt.close(fig)
 
-    return fig, table_rows, summary
+    cache = {
+        "dataset_key":  dataset_key,
+        "names":        names,
+        "originals":    [o.tolist() for o in originals],
+        "reconstructions": reconstructions.tolist(),
+        "mae_scores":   mae_scores.tolist(),
+        "default_threshold": threshold,
+        "skipped":      skipped,
+        "table_rows":   table_rows,
+    }
+
+    slider_update = gr.update(
+        minimum=round(threshold * 0.2, 5),
+        maximum=round(threshold * 3.0, 5),
+        value=threshold,
+        visible=True,
+    )
+
+    return fig, table_rows, summary, cache, slider_update
+
+
+def reclassify(threshold, cache):
+    """Re-classify the already-computed MAE scores at a new threshold and
+    re-render, without calling model.predict() again (issue #13)."""
+    if not cache or not cache.get("names"):
+        return gr.update(), [], "⚠️ Click **Analyse** first, then drag the slider.", cache
+
+    names           = cache["names"]
+    originals       = [np.array(o, dtype="float32") for o in cache["originals"]]
+    reconstructions = np.array(cache["reconstructions"], dtype="float32")
+    mae_scores      = np.array(cache["mae_scores"], dtype="float32")
+    dataset_key     = cache["dataset_key"]
+    cfg             = MODEL_CONFIG[dataset_key]
+
+    table_rows, n_anomalous = classify_rows(names, mae_scores, threshold)
+    summary = build_summary(dataset_key, names, threshold, n_anomalous, cache.get("skipped", []), cfg)
+
+    fig = build_figure(names, originals, reconstructions, mae_scores, threshold, dataset_key)
+    plt.close(fig)
+
+    cache = dict(cache)
+    cache["table_rows"] = table_rows
+
+    return fig, table_rows, summary, cache
+
+
+def export_csv(cache):
+    """Write the current result table to a temp CSV and hand its path to a
+    gr.DownloadButton, so users can keep a batch's results (issue #14)."""
+    if not cache or not cache.get("table_rows"):
+        raise gr.Error("⚠️ Click **Analyse** first, then download the results.")
+
+    fd, path = tempfile.mkstemp(suffix=".csv", prefix="anomaly_results_")
+    with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Filename", "MAE Score", "Threshold", "Prediction"])
+        writer.writerows(cache["table_rows"])
+    return path
 
 
 # ============================================================
@@ -352,10 +484,53 @@ If the **Mean Absolute Error (MAE)** of reconstruction is above a learned thresh
 HOW_TO_MD = """
 ### 📌 How to use
 1. **Select a model** from the dropdown (each is tied to a specific dataset from the paper)
-2. **Upload one or more images** — PNG / JPG / JPEG accepted
+2. **Upload one or more images** — PNG / JPG / JPEG accepted (or click a sample below)
 3. Click **Analyse** and view the results
+4. Drag the **threshold slider** to see how the normal/anomalous call changes
+5. **Download the results as CSV** to keep a record of a batch
 > Images are resized to 32×32 internally to match training. Any resolution is accepted.
 """
+
+# ── sample images (issue #4): a couple of normal/anomalous PNGs per
+# dataset, extracted ahead of time from each dataset's real test split, so
+# visitors can try the demo with one click instead of finding their own
+# images first. Keyed by the same dataset_key used in MODEL_CONFIG so the
+# examples can be looked up per-model.
+_SAMPLE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sample_images")
+
+SAMPLE_IMAGES = {
+    "MNIST — Digit '1' (Normal) vs Digit '3' (Anomalous)": [
+        os.path.join(_SAMPLE_DIR, "mnist", "normal_digit1_1.png"),
+        os.path.join(_SAMPLE_DIR, "mnist", "normal_digit1_2.png"),
+        os.path.join(_SAMPLE_DIR, "mnist", "anomaly_digit3_1.png"),
+        os.path.join(_SAMPLE_DIR, "mnist", "anomaly_digit3_2.png"),
+    ],
+    "Fashion-MNIST — Trousers (Normal) vs Dresses (Anomalous)": [
+        os.path.join(_SAMPLE_DIR, "fashion_mnist", "normal_trouser_1.png"),
+        os.path.join(_SAMPLE_DIR, "fashion_mnist", "normal_trouser_2.png"),
+        os.path.join(_SAMPLE_DIR, "fashion_mnist", "anomaly_dress_1.png"),
+        os.path.join(_SAMPLE_DIR, "fashion_mnist", "anomaly_dress_2.png"),
+    ],
+    "CIFAR-10 — Dogs (Normal) vs Cars (Anomalous)": [
+        os.path.join(_SAMPLE_DIR, "cifar10", "normal_dog_1.png"),
+        os.path.join(_SAMPLE_DIR, "cifar10", "normal_dog_2.png"),
+        os.path.join(_SAMPLE_DIR, "cifar10", "anomaly_car_1.png"),
+        os.path.join(_SAMPLE_DIR, "cifar10", "anomaly_car_2.png"),
+    ],
+    "SVHN — Digit '1' (Normal) vs Others (Anomalous)": [
+        os.path.join(_SAMPLE_DIR, "svhn", "normal_digit1_1.png"),
+        os.path.join(_SAMPLE_DIR, "svhn", "normal_digit1_2.png"),
+        os.path.join(_SAMPLE_DIR, "svhn", "anomaly_other_1.png"),
+        os.path.join(_SAMPLE_DIR, "svhn", "anomaly_other_2.png"),
+    ],
+}
+
+
+def load_sample_images(dataset_key):
+    """Populate the file-upload component with this model's bundled sample
+    images (both normal and anomalous) so a visitor can Analyse immediately."""
+    paths = [p for p in SAMPLE_IMAGES.get(dataset_key, []) if os.path.exists(p)]
+    return paths
 
 with gr.Blocks(
     title="Autoencoder Anomaly Detection — IJCNN 2024",
@@ -409,10 +584,28 @@ with gr.Blocks(
                 file_types=["image"],
             )
 
+            sample_btn = gr.Button(
+                "🖼️  Load sample images for this model",
+                size="sm"
+            )
+
             analyse_btn = gr.Button(
                 "🔍  Analyse for Anomalies",
                 variant="primary",
                 size="lg"
+            )
+
+            threshold_slider = gr.Slider(
+                label="③ Decision threshold (reconstruction MAE)",
+                info="Move this to re-classify the already-computed scores live — "
+                     "no need to re-run Analyse.",
+                minimum=0.0, maximum=1.0, value=0.5, step=0.0005,
+                visible=False,
+            )
+
+            export_btn = gr.DownloadButton(
+                "⬇️  Download results (CSV)",
+                visible=False,
             )
 
             gr.Markdown(
@@ -436,6 +629,11 @@ with gr.Blocks(
                 label="Visualisation  (Original | Reconstruction | Error Map | Score)"
             )
 
+    # ── cache of the last Analyse run's scores, shared between the
+    # threshold slider (#13) and the CSV export button (#14) so neither
+    # has to re-run model.predict() ──
+    results_cache = gr.State(value=None)
+
     # ── Wire up ──
     demo.load(
         fn=update_info,
@@ -443,10 +641,33 @@ with gr.Blocks(
         outputs=dataset_info_md
     )
 
+    sample_btn.click(
+        fn=load_sample_images,
+        inputs=dataset_dd,
+        outputs=image_upload,
+    )
+
     analyse_btn.click(
         fn=run_inference,
         inputs=[dataset_dd, image_upload],
-        outputs=[results_plot, results_table, summary_md],
+        outputs=[results_plot, results_table, summary_md, results_cache, threshold_slider],
+    ).then(
+        # Once a run has produced a cache, reveal the export button.
+        fn=lambda cache: gr.update(visible=bool(cache)),
+        inputs=results_cache,
+        outputs=export_btn,
+    )
+
+    threshold_slider.release(
+        fn=reclassify,
+        inputs=[threshold_slider, results_cache],
+        outputs=[results_plot, results_table, summary_md, results_cache],
+    )
+
+    export_btn.click(
+        fn=export_csv,
+        inputs=results_cache,
+        outputs=export_btn,
     )
 
     gr.Markdown(
