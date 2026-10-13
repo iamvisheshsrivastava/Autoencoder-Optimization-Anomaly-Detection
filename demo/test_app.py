@@ -192,7 +192,8 @@ def test_export_csv_writes_table_rows(tmp_path, monkeypatch):
     valid = _make_image_file(tmp_path, "valid.png")
     fig, rows, summary, cache, slider_update = app.run_inference(DATASET_KEY, [valid])
 
-    path = app.export_csv(cache)
+    path, state_path = app.export_csv(cache)
+    assert state_path == path
     with open(path, newline="", encoding="utf-8") as f:
         import csv as _csv
         written_rows = list(_csv.reader(f))
@@ -204,6 +205,25 @@ def test_export_csv_writes_table_rows(tmp_path, monkeypatch):
 def test_export_csv_without_prior_run_raises_error():
     with pytest.raises(gr.Error):
         app.export_csv(None)
+
+
+def test_export_csv_cleans_up_previous_export(tmp_path, monkeypatch):
+    # Issue #19: each session should have at most one export CSV on disk at
+    # a time — the previous export is removed before the next one is written.
+    _patch_get_model(monkeypatch)
+    valid = _make_image_file(tmp_path, "valid.png")
+    fig, rows, summary, cache, slider_update = app.run_inference(DATASET_KEY, [valid])
+
+    first_path, _ = app.export_csv(cache)
+    assert os.path.exists(first_path)
+
+    second_path, _ = app.export_csv(cache, first_path)
+    assert not os.path.exists(first_path)
+    assert os.path.exists(second_path)
+
+    # cleanup
+    os.remove(second_path)
+    app._export_tmp_paths.discard(second_path)
 
 
 def test_sample_images_exist_for_every_available_dataset():

@@ -9,10 +9,12 @@
 # Deploy on HuggingFace Spaces (Gradio SDK)
 # ============================================================
 
+import atexit
 import csv
 import os
 import inspect
 import tempfile
+import threading
 import numpy as np
 import gradio as gr
 import matplotlib
@@ -145,6 +147,13 @@ MODEL_CONFIG = {
 _model_cache     = {}
 _threshold_cache = {}
 
+# Guards the check-then-populate sequence in get_model(). demo.queue() allows
+# multiple concurrent inference calls on this process; without a lock, two
+# requests that both miss the cache for the same (uncached) dataset_key would
+# each independently download + load the checkpoint, doubling network/CPU
+# cost and discarding one of the two loaded models (issue #20).
+_model_cache_lock = threading.Lock()
+
 
 # ============================================================
 # Model loading
@@ -152,64 +161,76 @@ _threshold_cache = {}
 
 def get_model(dataset_key: str):
     if dataset_key not in _model_cache:
-        cfg = MODEL_CONFIG[dataset_key]
-
-        # Some entries (e.g. MVTec-AD, issue #3) are wired up end-to-end in
-        # the UI/preprocessing but have no trained weights to serve yet.
-        # Fail fast with the real reason instead of spending a network
-        # round-trip on a HuggingFace Hub lookup that will 404 anyway.
-        if not cfg.get("available", True):
-            raise gr.Error(
-                f"⏳ **{dataset_key}** isn't available yet.\n\n"
-                + cfg.get("unavailable_reason", "No trained weights for this dataset yet.")
-            )
-
-        print(f"Downloading {cfg['model_file']} from HuggingFace Hub …")
-        try:
-            model_path     = hf_hub_download(repo_id=HF_REPO_ID,
-                                             filename=cfg["model_file"],
-                                             repo_type="model",
-                                             revision=HF_MODEL_REVISION)
-            threshold_path = hf_hub_download(repo_id=HF_REPO_ID,
-                                             filename=cfg["threshold_file"],
-                                             repo_type="model",
-                                             revision=HF_MODEL_REVISION)
-        except (EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError):
-            # The checkpoint genuinely isn't present on the Hub yet (or the
-            # pinned repo/revision doesn't exist) — this is the one case
-            # where "not yet uploaded" is an accurate message.
-            raise gr.Error(
-                f"⏳ Model for **{dataset_key}** is not yet uploaded. "
-                "Please try the **CIFAR-10** model which is available now. "
-                "The remaining models will be added shortly!"
-            )
-        except Exception as e:
-            # Anything else (network timeout, HF Hub outage, rate limiting,
-            # auth failure, etc.) is a transient/infra problem, not a missing
-            # checkpoint — log the real exception and tell the user it's
-            # retry-able instead of implying the model doesn't exist.
-            print(f"  Error downloading {cfg['model_file']} for {dataset_key}: "
-                  f"{e.__class__.__name__}: {e}")
-            raise gr.Error(
-                f"⚠️ Could not reach the model repository for **{dataset_key}** "
-                "right now. Please retry in a moment."
-            )
-        # Legacy HDF5 (.h5) Keras checkpoints can embed Lambda/custom-object
-        # layers that execute arbitrary Python on deserialization. Newer
-        # Keras load_model() implementations accept `safe_mode` to refuse
-        # that; pass it only if the installed Keras version actually
-        # supports it (it is a Keras-3-only argument, and is a no-op for
-        # the legacy .h5 format even there — the real protection is the
-        # revision pin above, which stops an untrusted/mutated Hub repo
-        # from swapping the file out from under us).
-        load_kwargs = {"compile": False}
-        if "safe_mode" in inspect.signature(load_model).parameters:
-            load_kwargs["safe_mode"] = True
-        _model_cache[dataset_key]     = load_model(model_path, **load_kwargs)
-        _threshold_cache[dataset_key] = float(np.load(threshold_path))
-        print(f"  Loaded. Threshold = {_threshold_cache[dataset_key]:.5f}")
+        with _model_cache_lock:
+            # Re-check inside the lock: another thread may have already
+            # populated the cache for this dataset_key while we were
+            # waiting to acquire it.
+            if dataset_key not in _model_cache:
+                _load_model_into_cache(dataset_key)
 
     return _model_cache[dataset_key], _threshold_cache[dataset_key]
+
+
+def _load_model_into_cache(dataset_key: str):
+    """Download + load the checkpoint for dataset_key and populate
+    _model_cache/_threshold_cache. Must only be called while holding
+    _model_cache_lock."""
+    cfg = MODEL_CONFIG[dataset_key]
+
+    # Some entries (e.g. MVTec-AD, issue #3) are wired up end-to-end in
+    # the UI/preprocessing but have no trained weights to serve yet.
+    # Fail fast with the real reason instead of spending a network
+    # round-trip on a HuggingFace Hub lookup that will 404 anyway.
+    if not cfg.get("available", True):
+        raise gr.Error(
+            f"⏳ **{dataset_key}** isn't available yet.\n\n"
+            + cfg.get("unavailable_reason", "No trained weights for this dataset yet.")
+        )
+
+    print(f"Downloading {cfg['model_file']} from HuggingFace Hub …")
+    try:
+        model_path     = hf_hub_download(repo_id=HF_REPO_ID,
+                                         filename=cfg["model_file"],
+                                         repo_type="model",
+                                         revision=HF_MODEL_REVISION)
+        threshold_path = hf_hub_download(repo_id=HF_REPO_ID,
+                                         filename=cfg["threshold_file"],
+                                         repo_type="model",
+                                         revision=HF_MODEL_REVISION)
+    except (EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError):
+        # The checkpoint genuinely isn't present on the Hub yet (or the
+        # pinned repo/revision doesn't exist) — this is the one case
+        # where "not yet uploaded" is an accurate message.
+        raise gr.Error(
+            f"⏳ Model for **{dataset_key}** is not yet uploaded. "
+            "Please try the **CIFAR-10** model which is available now. "
+            "The remaining models will be added shortly!"
+        )
+    except Exception as e:
+        # Anything else (network timeout, HF Hub outage, rate limiting,
+        # auth failure, etc.) is a transient/infra problem, not a missing
+        # checkpoint — log the real exception and tell the user it's
+        # retry-able instead of implying the model doesn't exist.
+        print(f"  Error downloading {cfg['model_file']} for {dataset_key}: "
+              f"{e.__class__.__name__}: {e}")
+        raise gr.Error(
+            f"⚠️ Could not reach the model repository for **{dataset_key}** "
+            "right now. Please retry in a moment."
+        )
+    # Legacy HDF5 (.h5) Keras checkpoints can embed Lambda/custom-object
+    # layers that execute arbitrary Python on deserialization. Newer
+    # Keras load_model() implementations accept `safe_mode` to refuse
+    # that; pass it only if the installed Keras version actually
+    # supports it (it is a Keras-3-only argument, and is a no-op for
+    # the legacy .h5 format even there — the real protection is the
+    # revision pin above, which stops an untrusted/mutated Hub repo
+    # from swapping the file out from under us).
+    load_kwargs = {"compile": False}
+    if "safe_mode" in inspect.signature(load_model).parameters:
+        load_kwargs["safe_mode"] = True
+    _model_cache[dataset_key]     = load_model(model_path, **load_kwargs)
+    _threshold_cache[dataset_key] = float(np.load(threshold_path))
+    print(f"  Loaded. Threshold = {_threshold_cache[dataset_key]:.5f}")
 
 
 # ============================================================
@@ -372,18 +393,57 @@ def reclassify(threshold, cache):
     return fig, table_rows, summary, cache
 
 
-def export_csv(cache):
-    """Write the current result table to a temp CSV and hand its path to a
-    gr.DownloadButton, so users can keep a batch's results (issue #14)."""
+# Every temp CSV handed to a gr.DownloadButton across all sessions, so a
+# stray file left behind by a session that never comes back for another
+# export (tab closed, crash, etc.) still gets swept up when the process
+# exits instead of accumulating forever (issue #19).
+_export_tmp_paths = set()
+
+
+def _cleanup_export_tmp_files():
+    for p in list(_export_tmp_paths):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+        _export_tmp_paths.discard(p)
+
+
+atexit.register(_cleanup_export_tmp_files)
+
+
+def export_csv(cache, prev_path=None):
+    """Write the current result table to a CSV and hand its path to a
+    gr.DownloadButton, so users can keep a batch's results (issue #14).
+
+    `prev_path` is this session's previously-issued export path (tracked via
+    a per-session gr.State). Rather than calling mkstemp() fresh on every
+    click and leaking one more file into the container's temp dir forever
+    (issue #19), we delete the previous export for this session — bounding
+    each session to at most one temp CSV on disk at a time — and also
+    register the new path for a best-effort sweep on process exit.
+    """
     if not cache or not cache.get("table_rows"):
         raise gr.Error("⚠️ Click **Analyse** first, then download the results.")
 
-    fd, path = tempfile.mkstemp(suffix=".csv", prefix="anomaly_results_")
-    with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
+    if prev_path:
+        try:
+            os.remove(prev_path)
+        except OSError:
+            pass
+        _export_tmp_paths.discard(prev_path)
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".csv", prefix="anomaly_results_",
+        newline="", encoding="utf-8", delete=False,
+    ) as f:
         writer = csv.writer(f)
         writer.writerow(["Filename", "MAE Score", "Threshold", "Prediction"])
         writer.writerows(cache["table_rows"])
-    return path
+        path = f.name
+
+    _export_tmp_paths.add(path)
+    return path, path
 
 
 # ============================================================
@@ -634,6 +694,10 @@ with gr.Blocks(
     # has to re-run model.predict() ──
     results_cache = gr.State(value=None)
 
+    # Tracks this session's most recently issued export CSV path, so
+    # export_csv() can delete it before writing the next one (issue #19).
+    export_path_cache = gr.State(value=None)
+
     # ── Wire up ──
     demo.load(
         fn=update_info,
@@ -666,8 +730,8 @@ with gr.Blocks(
 
     export_btn.click(
         fn=export_csv,
-        inputs=results_cache,
-        outputs=export_btn,
+        inputs=[results_cache, export_path_cache],
+        outputs=[export_btn, export_path_cache],
     )
 
     gr.Markdown(
