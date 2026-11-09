@@ -412,6 +412,20 @@ def _cleanup_export_tmp_files():
 atexit.register(_cleanup_export_tmp_files)
 
 
+def _validated_export_tmp_path(path, prefix, suffix):
+    """Return a canonical export temp path if it matches our own naming scheme."""
+    if not path:
+        return None
+    real_path = os.path.realpath(path)
+    tmp_root = os.path.realpath(tempfile.gettempdir())
+    if os.path.commonpath([real_path, tmp_root]) != tmp_root:
+        return None
+    filename = os.path.basename(real_path)
+    if not filename.startswith(prefix) or not filename.endswith(suffix):
+        return None
+    return real_path
+
+
 def export_csv(cache, prev_path=None):
     """Write the current result table to a CSV and hand its path to a
     gr.DownloadButton, so users can keep a batch's results (issue #14).
@@ -426,7 +440,8 @@ def export_csv(cache, prev_path=None):
     if not cache or not cache.get("table_rows"):
         raise gr.Error("⚠️ Click **Analyse** first, then download the results.")
 
-    if prev_path:
+    prev_path = _validated_export_tmp_path(prev_path, "anomaly_results_", ".csv")
+    if prev_path and prev_path in _export_tmp_paths:
         try:
             os.remove(prev_path)
         except OSError:
@@ -452,11 +467,15 @@ def export_png(cache, prev_path=None):
         raise gr.Error("⚠️ Click **Analyse** first, then download the results.")
 
     if prev_path:
-        try:
-            os.remove(prev_path)
-        except OSError:
-            pass
-        _export_tmp_paths.discard(prev_path)
+        for tracked_path in list(_export_tmp_paths):
+            filename = os.path.basename(tracked_path)
+            if not (filename.startswith("anomaly_visualization_") and filename.endswith(".png")):
+                continue
+            try:
+                os.remove(tracked_path)
+            except OSError:
+                pass
+            _export_tmp_paths.discard(tracked_path)
 
     names = cache["names"]
     originals = [np.array(o, dtype="float32") for o in cache["originals"]]
