@@ -1,6 +1,6 @@
 gradio==6.23.1
 tensorflow-cpu==2.15.0
-huggingface_hub>=0.24.0
+huggingface_hub>=2.4.0
 numpy>=1.24.0,<2.0.0
 matplotlib>=3.7.0
 Pillow>=10.0.0
