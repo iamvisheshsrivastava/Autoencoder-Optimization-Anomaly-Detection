@@ -12,6 +12,7 @@
 import atexit
 import csv
 import os
+import re
 import inspect
 import tempfile
 import threading
@@ -416,14 +417,18 @@ def _validated_export_tmp_path(path, prefix, suffix):
     """Return a canonical export temp path if it matches our own naming scheme."""
     if not path:
         return None
-    real_path = os.path.realpath(path)
+    filename = os.path.basename(path)
+    if not re.fullmatch(rf"{re.escape(prefix)}[A-Za-z0-9_.-]+{re.escape(suffix)}", filename):
+        return None
+
     tmp_root = os.path.realpath(tempfile.gettempdir())
+    real_path = os.path.realpath(path)
+    canonical_path = os.path.realpath(os.path.join(tmp_root, filename))
     if os.path.commonpath([real_path, tmp_root]) != tmp_root:
         return None
-    filename = os.path.basename(real_path)
-    if not filename.startswith(prefix) or not filename.endswith(suffix):
+    if real_path != canonical_path:
         return None
-    return real_path
+    return canonical_path
 
 
 def export_csv(cache, prev_path=None):
@@ -466,16 +471,13 @@ def export_png(cache, prev_path=None):
     if not cache or not cache.get("names"):
         raise gr.Error("⚠️ Click **Analyse** first, then download the results.")
 
-    if prev_path:
-        for tracked_path in list(_export_tmp_paths):
-            filename = os.path.basename(tracked_path)
-            if not (filename.startswith("anomaly_visualization_") and filename.endswith(".png")):
-                continue
-            try:
-                os.remove(tracked_path)
-            except OSError:
-                pass
-            _export_tmp_paths.discard(tracked_path)
+    prev_path = _validated_export_tmp_path(prev_path, "anomaly_visualization_", ".png")
+    if prev_path and prev_path in _export_tmp_paths:
+        try:
+            os.remove(prev_path)
+        except OSError:
+            pass
+        _export_tmp_paths.discard(prev_path)
 
     names = cache["names"]
     originals = [np.array(o, dtype="float32") for o in cache["originals"]]
