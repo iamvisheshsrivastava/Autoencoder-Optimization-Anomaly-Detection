@@ -12,6 +12,7 @@
 import atexit
 import csv
 import os
+import re
 import inspect
 import tempfile
 import threading
@@ -412,6 +413,24 @@ def _cleanup_export_tmp_files():
 atexit.register(_cleanup_export_tmp_files)
 
 
+def _validated_export_tmp_path(path, prefix, suffix):
+    """Return a canonical export temp path if it matches our own naming scheme."""
+    if not path:
+        return None
+    filename = os.path.basename(path)
+    if not re.fullmatch(rf"{re.escape(prefix)}[A-Za-z0-9_.-]+{re.escape(suffix)}", filename):
+        return None
+
+    tmp_root = os.path.realpath(tempfile.gettempdir())
+    real_path = os.path.realpath(path)
+    canonical_path = os.path.realpath(os.path.join(tmp_root, filename))
+    if os.path.commonpath([real_path, tmp_root]) != tmp_root:
+        return None
+    if real_path != canonical_path:
+        return None
+    return canonical_path
+
+
 def export_csv(cache, prev_path=None):
     """Write the current result table to a CSV and hand its path to a
     gr.DownloadButton, so users can keep a batch's results (issue #14).
@@ -426,7 +445,8 @@ def export_csv(cache, prev_path=None):
     if not cache or not cache.get("table_rows"):
         raise gr.Error("⚠️ Click **Analyse** first, then download the results.")
 
-    if prev_path:
+    prev_path = _validated_export_tmp_path(prev_path, "anomaly_results_", ".csv")
+    if prev_path and prev_path in _export_tmp_paths:
         try:
             os.remove(prev_path)
         except OSError:
@@ -441,6 +461,41 @@ def export_csv(cache, prev_path=None):
         writer.writerow(["Filename", "MAE Score", "Threshold", "Prediction"])
         writer.writerows(cache["table_rows"])
         path = f.name
+
+    _export_tmp_paths.add(path)
+    return path, path
+
+
+def export_png(cache, prev_path=None):
+    """Render and export the current visualisation figure as PNG."""
+    if not cache or not cache.get("names"):
+        raise gr.Error("⚠️ Click **Analyse** first, then download the results.")
+
+    prev_path = _validated_export_tmp_path(prev_path, "anomaly_visualization_", ".png")
+    if prev_path and prev_path in _export_tmp_paths:
+        try:
+            os.remove(prev_path)
+        except OSError:
+            pass
+        _export_tmp_paths.discard(prev_path)
+
+    names = cache["names"]
+    originals = [np.array(o, dtype="float32") for o in cache["originals"]]
+    reconstructions = np.array(cache["reconstructions"], dtype="float32")
+    mae_scores = np.array(cache["mae_scores"], dtype="float32")
+    dataset_key = cache["dataset_key"]
+    if cache.get("table_rows"):
+        threshold = float(cache["table_rows"][0][2])
+    else:
+        threshold = float(cache["default_threshold"])
+
+    fig = build_figure(names, originals, reconstructions, mae_scores, threshold, dataset_key)
+    with tempfile.NamedTemporaryFile(
+        suffix=".png", prefix="anomaly_visualization_", delete=False,
+    ) as f:
+        path = f.name
+    fig.savefig(path, format="png", facecolor=fig.get_facecolor(), bbox_inches="tight")
+    plt.close(fig)
 
     _export_tmp_paths.add(path)
     return path, path
@@ -667,6 +722,10 @@ with gr.Blocks(
                 "⬇️  Download results (CSV)",
                 visible=False,
             )
+            export_png_btn = gr.DownloadButton(
+                "⬇️  Download visualization (PNG)",
+                visible=False,
+            )
 
             gr.Markdown(
                 "<br><sub>⚡ First run may take ~30 s while the model downloads. "
@@ -697,6 +756,7 @@ with gr.Blocks(
     # Tracks this session's most recently issued export CSV path, so
     # export_csv() can delete it before writing the next one (issue #19).
     export_path_cache = gr.State(value=None)
+    export_png_path_cache = gr.State(value=None)
 
     # ── Wire up ──
     demo.load(
@@ -716,10 +776,10 @@ with gr.Blocks(
         inputs=[dataset_dd, image_upload],
         outputs=[results_plot, results_table, summary_md, results_cache, threshold_slider],
     ).then(
-        # Once a run has produced a cache, reveal the export button.
-        fn=lambda cache: gr.update(visible=bool(cache)),
+        # Once a run has produced a cache, reveal the export buttons.
+        fn=lambda cache: (gr.update(visible=bool(cache)), gr.update(visible=bool(cache))),
         inputs=results_cache,
-        outputs=export_btn,
+        outputs=[export_btn, export_png_btn],
     )
 
     threshold_slider.release(
@@ -732,6 +792,12 @@ with gr.Blocks(
         fn=export_csv,
         inputs=[results_cache, export_path_cache],
         outputs=[export_btn, export_path_cache],
+    )
+
+    export_png_btn.click(
+        fn=export_png,
+        inputs=[results_cache, export_png_path_cache],
+        outputs=[export_png_btn, export_png_path_cache],
     )
 
     gr.Markdown(

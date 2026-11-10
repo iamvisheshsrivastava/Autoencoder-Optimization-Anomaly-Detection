@@ -11,6 +11,7 @@
 # ============================================================
 
 import os
+import tempfile
 
 import numpy as np
 import pytest
@@ -222,6 +223,65 @@ def test_export_csv_cleans_up_previous_export(tmp_path, monkeypatch):
     assert os.path.exists(second_path)
 
     # cleanup
+    os.remove(second_path)
+    app._export_tmp_paths.discard(second_path)
+
+
+def test_export_png_writes_visualization_file(tmp_path, monkeypatch):
+    _patch_get_model(monkeypatch)
+    valid = _make_image_file(tmp_path, "valid.png")
+    fig, rows, summary, cache, slider_update = app.run_inference(DATASET_KEY, [valid])
+
+    path, state_path = app.export_png(cache)
+    assert state_path == path
+    assert os.path.exists(path)
+    with open(path, "rb") as f:
+        assert f.read(8) == b"\x89PNG\r\n\x1a\n"
+
+    os.remove(path)
+    app._export_tmp_paths.discard(path)
+
+
+def test_export_png_without_prior_run_raises_error():
+    with pytest.raises(gr.Error):
+        app.export_png(None)
+
+
+def test_export_png_cleans_up_previous_export(tmp_path, monkeypatch):
+    _patch_get_model(monkeypatch)
+    valid = _make_image_file(tmp_path, "valid.png")
+    fig, rows, summary, cache, slider_update = app.run_inference(DATASET_KEY, [valid])
+
+    first_path, _ = app.export_png(cache)
+    assert os.path.exists(first_path)
+
+    second_path, _ = app.export_png(cache, first_path)
+    assert not os.path.exists(first_path)
+    assert os.path.exists(second_path)
+
+    os.remove(second_path)
+    app._export_tmp_paths.discard(second_path)
+
+
+def test_export_png_only_cleans_up_passed_previous_export(tmp_path, monkeypatch):
+    _patch_get_model(monkeypatch)
+    valid = _make_image_file(tmp_path, "valid.png")
+    fig, rows, summary, cache, slider_update = app.run_inference(DATASET_KEY, [valid])
+
+    first_path, _ = app.export_png(cache)
+    with tempfile.NamedTemporaryFile(
+        suffix=".png", prefix="anomaly_visualization_", delete=False
+    ) as f:
+        other_path = f.name
+    app._export_tmp_paths.add(other_path)
+
+    second_path, _ = app.export_png(cache, first_path)
+    assert not os.path.exists(first_path)
+    assert os.path.exists(other_path)
+    assert os.path.exists(second_path)
+
+    os.remove(other_path)
+    app._export_tmp_paths.discard(other_path)
     os.remove(second_path)
     app._export_tmp_paths.discard(second_path)
 
