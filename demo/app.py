@@ -638,6 +638,22 @@ with gr.Blocks(
 
             dataset_dd.change(update_info, inputs=dataset_dd, outputs=dataset_info_md)
 
+            def reset_results():
+                """
+                Clear the previous model's Analyse output when the dataset
+                dropdown changes, so a stale results table/plot/threshold
+                slider/export button never gets mislabeled as belonging to
+                the newly selected model (issue #23).
+                """
+                return (
+                    None,
+                    [],
+                    "_Results will appear here after you click Analyse._",
+                    None,
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                )
+
             image_upload = gr.File(
                 label="② Upload Test Image(s)",
                 file_count="multiple",
@@ -703,6 +719,12 @@ with gr.Blocks(
         fn=update_info,
         inputs=dataset_dd,
         outputs=dataset_info_md
+    )
+
+    dataset_dd.change(
+        fn=reset_results,
+        inputs=None,
+        outputs=[results_plot, results_table, summary_md, results_cache, threshold_slider, export_btn],
     )
 
     sample_btn.click(
