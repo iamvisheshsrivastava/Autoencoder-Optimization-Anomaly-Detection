@@ -14,5 +14,14 @@ jobs:
     steps:
       - name: Ping the Space
         run: |
-          curl -sS -o /dev/null -w "HTTP %{http_code}\n" \
-            "https://visheshsrivastava-autoencoder-anomaly-detection.hf.space/"
+          # Must be iamvisheshsrivastava-... (the actual Space owner/slug) --
+          # the old visheshsrivastava-... host 404s, so this workflow was
+          # reporting "success" on every run without ever waking the real
+          # Space (#37).
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 15 \
+            "https://iamvisheshsrivastava-autoencoder-anomaly-detection.hf.space/")
+          echo "HTTP $code"
+          if [ "$code" -lt 200 ] || [ "$code" -ge 400 ]; then
+            echo "Ping failed with HTTP $code"
+            exit 1
+          fi
